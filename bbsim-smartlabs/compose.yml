@@ -1,0 +1,14 @@
+services:
+  bbsim:
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile
+    image: bbsim:local
+    container_name: bbsim
+    privileged: true
+    restart: always
+    command: ["/app/bbsim", "-onu", "16", "-pon", "4"]
+    ports:
+      - "50060:50060"   # openolt gRPC — what a real VOLTHA would dial
+      - "50070:50070"   # BBSim's own gRPC API — bbsimctl talks here
+      - "50071:50071"   # BBSim's REST API (grpc-gateway in front of :50070)

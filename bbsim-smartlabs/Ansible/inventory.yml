@@ -1,0 +1,5 @@
+all:
+  hosts:
+    bbsim:
+      ansible_connection: local
+      bbsim_api: "http://localhost:50071"

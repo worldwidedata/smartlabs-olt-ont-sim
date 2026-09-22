@@ -1,0 +1,71 @@
+---
+# Every call/expectation below was verified live against the container —
+# see TESTING.md and ARCHITECTURE.md for what was actually observed.
+# NOTE: does not power an ONU on/off — PoweronOlt (needed first) has no
+# REST binding, and ShutdownONU on a disabled PON port hangs forever
+# (verified). See ARCHITECTURE.md#request-lifecycle.
+- name: Drive the BBSim OLT/ONU simulator over its REST API
+  hosts: bbsim
+  gather_facts: false
+
+  vars:
+    onu_serial: BBSM00000001
+
+  tasks:
+    - name: Health check — confirm the API is reachable
+      ansible.builtin.uri:
+        url: "{{ bbsim_api }}/v1/version"
+        method: GET
+        return_content: true
+      register: bbsim_version
+
+    - name: Show BBSim version response
+      ansible.builtin.debug:
+        msg: "{{ bbsim_version.json }}"
+
+    - name: Get OLT status
+      ansible.builtin.uri:
+        url: "{{ bbsim_api }}/v1/olt"
+        method: GET
+        return_content: true
+      register: bbsim_olt
+      failed_when: bbsim_olt.json.OperState != 'down'
+
+    - name: List ONUs
+      ansible.builtin.uri:
+        url: "{{ bbsim_api }}/v1/olt/onus"
+        method: GET
+        return_content: true
+      register: bbsim_onus
+
+    - name: Confirm ONU count matches compose.yml's -onu/-pon flags (16 x 4)
+      ansible.builtin.assert:
+        # bbsim_onus.json.items (dot-access) resolves to Python dict.items,
+        # the bound method, not the JSON key — verified live, use ['items'].
+        that: bbsim_onus.json['items'] | length == 64
+
+    - name: Confirm the sample ONU also starts powered down
+      ansible.builtin.uri:
+        url: "{{ bbsim_api }}/v1/olt/onus/{{ onu_serial }}"
+        method: GET
+        return_content: true
+      register: bbsim_onu
+      failed_when: bbsim_onu.json.OperState != 'down'
+
+    - name: Reboot the OLT — the one state-changing call that works standalone
+      ansible.builtin.uri:
+        url: "{{ bbsim_api }}/v1/olt/reboot"
+        method: POST
+        return_content: true
+        status_code: 200
+      register: bbsim_reboot
+
+    - name: Show reboot response
+      ansible.builtin.debug:
+        msg: "{{ bbsim_reboot.json.message }}"
+
+    - name: Failure path — querying an unknown serial number fails loudly
+      ansible.builtin.uri:
+        url: "{{ bbsim_api }}/v1/olt/onus/BBSM99999999"
+        method: GET
+        status_code: 500
