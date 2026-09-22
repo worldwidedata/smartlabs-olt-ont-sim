@@ -174,9 +174,24 @@ from the fork root (one level up), pointing at the binary in
 
 ```shell
 cd ..
-bbsim-smartlabs/bin/bbr -onu 16 -pon 4 -logfile /tmp/bbr.log
+timeout 30 bbsim-smartlabs/bin/bbr -onu 16 -pon 4 -logfile bbsim-smartlabs/bin/bbr.log
 cd -
 ```
+
+> **Use a log path inside `bin/`, not `/tmp`.** `bbr` doesn't fall back
+> to stderr if the log file can't be opened, despite what its own error
+> message says — it calls `log.Fatal` and exits immediately. A shared
+> path like `/tmp/bbr.log` will go stale (owned by whoever ran it last —
+> e.g. if you ever `sudo`'d it once) and silently break every run after
+> for anyone else. `bin/` is created fresh by `mkdir -p bin` above and
+> owned by whoever's running the command, so this can't happen there.
+>
+> **Also flaky, verified live — that's what `timeout` is for:** on one
+> run against a completely fresh container, `bbr` hung for 2+ minutes
+> past its normal ~3s completion (stuck right after `"Received
+> Indication_IntfOperInd"`, no error, no exit) and had to be killed. A
+> retry immediately after succeeded normally. Cause not identified —
+> treat it as occasionally flaky, not reliably reproducible.
 
 **Pass (confirmed):** log ends with
 
@@ -186,24 +201,36 @@ level=info msg="BBR done!" Duration=3.099464688s
 ```
 
 Verify via REST that the state actually changed, not just that `bbr`
-claimed success:
+claimed success — **both the OLT itself and an individual ONU:**
 
 ```shell
+curl -s http://localhost:50071/v1/olt | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); print(d['OperState'], d['InternalState'])"
+# -> up enabled
+
 curl -s http://localhost:50071/v1/olt/onus/BBSM00000001 | python3 -m json.tool
 ```
 
-**Confirmed:** `OperState: "up"`, and each service under `unis[].services`
-shows `EapolState: "eap_response_success_received"`,
-`DhcpState: "dhcp_ack_received"` — real activation, verified independently
-of `bbr`'s own report.
+**Confirmed:** OLT `OperState: "up"`, `InternalState: "enabled"`, all 4
+PON ports and the NNI port `OperState: "up"` — the OLT itself is
+activated, not just the ONUs. The ONU's `OperState: "up"`, and each
+service under `unis[].services` shows
+`EapolState: "eap_response_success_received"`,
+`DhcpState: "dhcp_ack_received"` — real activation, verified
+independently of `bbr`'s own report.
 
 ## 4. Automate it with Ansible
 
 Tests 1, 3, 5, and 6 above, driven from a playbook instead of hand-typed
-`curl` — see `Ansible/README.md` for exactly what each task checks:
+`curl` — see `Ansible/README.md` for exactly what each task checks. It
+asserts the OLT is `down`, same pre-activation assumption as Tests
+1/3/5/6, so **restart the container first if you already ran Test 7** —
+otherwise the "Get OLT status" task fails on real data (`up`), not a bug:
 
 ```shell
+docker compose restart bbsim   # skip only if you haven't run Test 7 yet
 cd Ansible
+sleep 5
 ansible-playbook -i inventory.yml bbsim_smoke_test.yml
 ```
 
@@ -213,6 +240,7 @@ ansible-playbook -i inventory.yml bbsim_smoke_test.yml
 
 ```shell
 docker compose down   # stop and remove the container
+cd ..
 rm -rf bin             # drop the bbr build artifact, if you built one (Test 7)
 ```
 
@@ -220,6 +248,15 @@ rm -rf bin             # drop the bbr build artifact, if you built one (Test 7)
 
 - **`ShutdownONU` (`DELETE /v1/olt/onus/{SN}`) hangs** — see the callout
   in Test 3. `docker compose restart bbsim`, don't wait it out.
+- **`bbr` itself hangs** — seen once, on a fresh container, no error, no
+  exit. Always run it under `timeout 30` (see Test 7); if it hangs, kill
+  it and retry once before assuming something's actually broken.
+- **`bbr` exits immediately with `FATA[...] Failed to log to file,
+  using default stderr`** — despite the message, it does not fall back
+  to stderr, it exits. The `-logfile` path already exists and you can't
+  write to it (commonly: someone ran it with `sudo` once, leaving it
+  root-owned). Fix: use a path inside `bin/` (see Test 7), never a
+  shared path like `/tmp/bbr.log`.
 - **`PoweronONU` fails with `"PON port 0 not enabled"`** — expected
   without `bbr` having enabled the OLT first. Run Test 7.
 - **`docker compose build` fails with a permission error on the
